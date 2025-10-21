@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="hi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Wingo Offline — Deterministic + Admin Panel</title>
+<style>
+  :root{--bg:#071022;--card:#0b1422;--muted:#9fb0c8;--accent:#ffd166}
+  body{margin:0;font-family:Inter,Segoe UI,Roboto,Arial;background:linear-gradient(180deg,#06111d,#071022);color:#e6eef6;padding:20px}
+  .wrap{max-width:1000px;margin:10px auto}
+  header{display:flex;align-items:center;justify-content:space-between;gap:12px}
+  h1{margin:0;font-size:20px}
+  .lead{color:var(--muted);margin-top:6px}
+  .grid{display:grid;grid-template-columns:1fr 360px;gap:18px;margin-top:18px}
+  .card{background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));padding:14px;border-radius:10px}
+  .big{font-size:96px;font-weight:800;color:var(--accent);text-align:center}
+  .meta{color:var(--muted);text-align:center;margin-top:6px}
+  .controls{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:10px}
+  input[type=number]{width:100px;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.04);background:transparent;color:inherit}
+  button{padding:8px 12px;border-radius:8px;border:none;background:#0f2a3b;color:#fff;cursor:pointer}
+  .history{max-height:420px;overflow:auto;margin-top:10px}
+  ol{margin:6px 0 0;padding-left:18px;color:var(--muted)}
+  .small{font-size:13px;color:var(--muted)}
+  .tag{padding:6px 8px;border-radius:8px;background:rgba(255,255,255,0.02);font-size:13px}
+  .row{display:flex;gap:8px;align-items:center}
+  footer{color:var(--muted);font-size:13px;margin-top:12px}
+  @media (max-width:900px){ .grid{grid-template-columns:1fr} .big{font-size:64px} }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>Wingo Offline — Deterministic + Admin Panel</h1>
+        <div class="lead">Page ko locally open karo. Number har minute boundary pe deterministic generate hota hai. Admin panel se manual number dal sakte ho.</div>
+      </div>
+      <div class="tag small">Offline • Deterministic • Manual override</div>
+    </header>
+
+    <div class="grid">
+      <!-- Main column -->
+      <div>
+        <div class="card" aria-live="polite">
+          <div class="big" id="displayVal">—</div>
+          <div class="meta" id="meta">source: — · time: —</div>
+          <div class="meta" id="nextAt">Next change at: —</div>
+
+          <div class="controls">
+            <button id="refreshBtn">Refresh</button>
+            <button id="copyBtn">Copy current (to clipboard)</button>
+            <button id="exportBtn">Export state</button>
+            <button id="downloadBtn">Download JSON</button>
+          </div>
+
+          <div style="margin-top:12px" class="small">
+            <strong>Note:</strong> Deterministic value banega minute-key + SECRET pe. Manual override apply karega jab aap set karoge.
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:12px">
+          <strong>History (latest first)</strong>
+          <div class="history"><ol id="histList"></ol></div>
+          <div style="margin-top:8px" class="small">History saved in browser (localStorage). Use export to share.</div>
+        </div>
+      </div>
+
+      <!-- Side panel (Admin) -->
+      <aside>
+        <div class="card">
+          <strong>Admin Panel (Penal)</strong>
+          <div class="small" style="margin-top:8px">Yahan se aap manual number daal sakte ho. Manual mode do tarah se kaam karega:</div>
+          <ol class="small" style="margin-top:6px;color:var(--muted)">
+            <li><b>Apply until cleared</b> — manual value tab tak current rahega jab tak aap 'Clear manual' naa karo.</li>
+            <li><b>Apply for this minute only</b> — manual value sirf current minute ke liye apply hoga; agle minute auto wapas aayega.</li>
+          </ol>
+
+          <div style="margin-top:12px" class="row">
+            <input id="manualInput" type="number" min="0" max="9" placeholder="0-9" />
+            <button id="applyBtn">Set Manual</button>
+          </div>
+
+          <div style="margin-top:8px" class="row">
+            <label class="small"><input id="oneMinuteToggle" type="checkbox" /> Apply for this minute only</label>
+          </div>
+
+          <div style="margin-top:10px" class="row">
+            <button id="clearManualBtn">Clear manual</button>
+            <button id="showApiBtn">Show JS API</button>
+          </div>
+
+          <hr style="margin:12px 0;border-color:rgba(255,255,255,0.03)">
+
+          <div>
+            <strong class="small">Export / Import</strong>
+            <div style="margin-top:8px" class="row">
+              <button id="showExport">Show JSON</button>
+              <button id="importBtn">Import JSON</button>
+            </div>
+            <textarea id="jsonArea" placeholder='Paste exported JSON here to import' style="width:100%;height:120px;margin-top:8px;border-radius:8px;background:#071224;color:#cfe6ff;padding:8px;border:none"></textarea>
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <footer>
+      <div class="small">Saved locally. If you want this to act as an HTTP API other apps can call, I can give a Node.js version as well.</div>
+    </footer>
+  </div>
+
+<script>
+/*
+  Wingo Offline Deterministic + Admin Panel
+  - Deterministic number changes exactly at minute boundary (local time)
+  - Manual override possible (until cleared or for current minute)
+  - Stored in localStorage: KEY = 'wingo_offline_state_v2'
+  - Exposes window.Wingo API
+*/
+
+// -------- CONFIG --------
+const SECRET = 'local_offline_secret_change_me'; // same secret across devices -> same deterministic stream
+const STORAGE_KEY = 'wingo_offline_state_v2';
+const HISTORY_MAX = 300;
+
+// -------- Utilities --------
+function nowISO(){ return new Date().toISOString(); }
+function pad(n){ return String(n).padStart(2,'0'); }
+function minuteKeyForDate(d = new Date()){
+  const Y = d.getFullYear();
+  const M = pad(d.getMonth()+1);
+  const D = pad(d.getDate());
+  const h = pad(d.getHours());
+  const m = pad(d.getMinutes());
+  return `${Y}${M}${D}${h}${m}`; // YYYYMMDDHHMM
+}
+
+// Deterministic digit using Web Crypto (SHA-256). Returns Promise<number>
+async function deterministicDigit(minuteKey, instance = ''){
+  // Use subtle.digest to compute SHA-256 of SECRET|minuteKey|instance
+  const encoder = new TextEncoder();
+  const msg = `${SECRET}|${minuteKey}|${instance}`;
+  const data = encoder.encode(msg);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const bytes = new Uint8Array(hashBuffer);
+  // use first 6 bytes to form a big integer then mod 10
+  let val = 0n;
+  const take = Math.min(6, bytes.length);
+  for (let i = 0; i < take; i++){
+    val = (val << 8n) + BigInt(bytes[i]);
+  }
+  return Number(val % 10n);
+}
+
+// -------- State management --------
+function loadState(){
+  try{
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if(!raw) return null;
+    return JSON.parse(raw);
+  }catch(e){
+    console.error('loadState error', e);
+    return null;
+  }
+}
+function saveState(s){
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
+}
+function makeInitialState(){
+  return {
+    current: null,
+    timestamp: null,
+    source: null, // 'auto' or 'manual'
+    minuteKey: null,
+    manual: { active:false, value:null, expiresMinuteKey:null }, // expiresMinuteKey null => until cleared
+    history: []
+  };
+}
+
+let state = loadState() || makeInitialState();
+
+// -------- UI refs --------
+const displayVal = document.getElementById('displayVal');
+const meta = document.getElementById('meta');
+const nextAt = document.getElementById('nextAt');
+const histList = document.getElementById('histList');
+
+const manualInput = document.getElementById('manualInput');
+const applyBtn = document.getElementById('applyBtn');
+const oneMinuteToggle = document.getElementById('oneMinuteToggle');
+const clearManualBtn = document.getElementById('clearManualBtn');
+const refreshBtn = document.getElementById('refreshBtn');
+const copyBtn = document.getElementById('copyBtn');
+const exportBtn = document.getElementById('exportBtn');
+const downloadBtn = document.getElementById('downloadBtn');
+const showExport = document.getElementById('showExport');
+const jsonArea = document.getElementById('jsonArea');
+const importBtn = document.getElementById('importBtn');
+const showApiBtn = document.getElementById('showApiBtn');
+
+// -------- Core logic --------
+async function computeAutoFor(minKey){
+  const digit = await deterministicDigit(minKey, '');
+  return digit;
+}
+
+async function refreshStateAndUI(){
+  // compute what should be current right now
+  const now = new Date();
+  const currentMinuteKey = minuteKeyForDate(now);
+
+  // If manual active and not expired -> use manual
+  if(state.manual && state.manual.active){
+    // if expiresMinuteKey is set and it's < currentMinuteKey => expired
+    if(state.manual.expiresMinuteKey && state.manual.expiresMinuteKey < currentMinuteKey){
+      // expired -> clear manual
+      state.manual = { active:false, value:null, expiresMinuteKey:null };
+    } else {
+      // manual still valid -> show manual as current (do not auto-change)
+      applyCurrent(state.manual.value, 'manual', state.manual.expiresMinuteKey || null);
+      render();
+      return;
+    }
+  }
+
+  // otherwise auto compute
+  // If we already have value for currentMinuteKey in state, keep it; else compute and push history
+  if(state.minuteKey !== currentMinuteKey || state.source !== 'auto'){
+    const val = await computeAutoFor(currentMinuteKey);
+    applyCurrent(val, 'auto', currentMinuteKey);
+  } else {
+    // already up-to-date
+  }
+  render();
+}
+
+// Apply a current value and add to history
+function applyCurrent(value, source, minuteKeyOrExpires){
+  const ts = nowISO();
+  state.current = value;
+  state.timestamp = ts;
+  state.source = source;
+  state.minuteKey = source === 'auto' ? minuteKeyOrExpires : (minuteKeyOrExpires || null);
+  // push to history (latest first)
+  state.history.unshift({ value, timestamp: ts, source, minuteKey: state.minuteKey });
+  if(state.history.length > HISTORY_MAX) state.history.length = HISTORY_MAX;
+  saveState(state);
+}
+
+// Manual set handler
+applyBtn.addEventListener('click', ()=> {
+  const v = Number(manualInput.value);
+  if(!Number.isInteger(v) || v<0 || v>9){ alert('0 से 9 तक का integer डालो'); return; }
+  const oneMinute = oneMinuteToggle.checked;
+  if(oneMinute){
+    // expire at currentMinuteKey (so valid for this minute only)
+    const now = new Date();
+    const mk = minuteKeyForDate(now);
+    state.manual = { active:true, value:v, expiresMinuteKey: mk };
+  } else {
+    state.manual = { active:true, value:v, expiresMinuteKey: null };
+  }
+  // apply immediately
+  applyCurrent(v, 'manual', state.manual.expiresMinuteKey);
+  saveState(state);
+  render();
+});
+
+// Clear manual
+clearManualBtn.addEventListener('click', ()=> {
+  state.manual = { active:false, value:null, expiresMinuteKey:null };
+  saveState(state);
+  refreshStateAndUI();
+});
+
+// Refresh UI
+refreshBtn.addEventListener('click', ()=> refreshStateAndUI());
+
+// Copy current to clipboard
+copyBtn.addEventListener('click', async ()=> {
+  const txt = JSON.stringify({ value: state.current, timestamp: state.timestamp, source: state.source }, null, 2);
+  try{
+    await navigator.clipboard.writeText(txt);
+    alert('Copied current JSON to clipboard');
+  }catch(e){ alert('Clipboard failed: '+e.message); }
+});
+
+// Export show JSON
+showExport.addEventListener('click', ()=> {
+  jsonArea.value = JSON.stringify(state, null, 2);
+});
+
+// Import JSON
+importBtn.addEventListener('click', ()=> {
+  const txt = (jsonArea.value || '').trim();
+  if(!txt){ alert('Exported JSON paste karo textarea me pehle'); return; }
+  try{
+    const s = JSON.parse(txt);
+    // basic validation
+    if(!('history' in s) || !('manual' in s)){ alert('Invalid state JSON'); return; }
+    state = s;
+    saveState(state);
+    render();
+    alert('Imported state');
+  }catch(e){ alert('Invalid JSON: '+e.message); }
+});
+
+// Download JSON file
+downloadBtn.addEventListener('click', ()=> {
+  const blob = new Blob([JSON.stringify(state, null, 2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'wingo_state.json'; document.body.appendChild(a); a.click();
+  setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); }, 3000);
+});
+
+// Periodic scheduler: align to minute boundary, then re-run refreshStateAndUI at every second to check
+let aligned = false;
+function scheduleAlignment(){
+  // compute ms to next minute boundary
+  const now = Date.now();
+  const msToNext = 60000 - (now % 60000);
+  // set timeout to align exactly at :00
+  setTimeout(()=> {
+    // At boundary, refresh once (to pick up new auto value if any)
+    refreshStateAndUI();
+    // then every minute, ensure auto picks up
+    setInterval(()=> {
+      refreshStateAndUI();
+    }, 60000);
+  }, msToNext);
+  // Also update nextAt display every 500ms
+  setInterval(()=> {
+    const now2 = Date.now();
+    const msToNext2 = 60000 - (now2 % 60000);
+    const next = new Date(now2 + msToNext2);
+    document.getElementById('nextAt').textContent = 'Next change at: ' + next.toLocaleTimeString();
+  }, 500);
+}
+
+// Render UI from state
+function render(){
+  displayVal.textContent = state.current === null ? '-' : state.current;
+  meta.textContent = `source: ${state.source || '-'} · time: ${state.timestamp || '-'}`;
+  // history
+  histList.innerHTML = '';
+  state.history.slice(0,200).forEach(it=>{
+    const li = document.createElement('li');
+    li.innerHTML = `<span style="color:${it.source==='manual'?'#ffd166':'#9fb0c8'}">[${it.source}]</span> ${it.timestamp} → <b>${it.value}</b>`;
+    histList.appendChild(li);
+  });
+}
+
+// Expose JS API on window.Wingo
+window.Wingo = {
+  get: ()=> ({ value: state.current, timestamp: state.timestamp, source: state.source, manual: state.manual }),
+  setManual: (v, opts={ oneMinute:false })=> {
+    if(!Number.isInteger(v) || v<0 || v>9) throw new Error('value must be integer 0..9');
+    const now = new Date();
+    const mk = minuteKeyForDate(now);
+    state.manual = { active:true, value:v, expiresMinuteKey: opts.oneMinute ? mk : null };
+    applyCurrent(v, 'manual', state.manual.expiresMinuteKey);
+    saveState(state);
+    render();
+    return window.Wingo.get();
+  },
+  clearManual: ()=> { state.manual = { active:false, value:null, expiresMinuteKey:null }; saveState(state); refreshStateAndUI(); },
+  history: (n=20)=> state.history.slice(0, n)
+};
+
+// Initial boot
+(async function boot(){
+  // If no current, compute for now
+  if(!state.current || !state.timestamp){
+    await refreshStateAndUI();
+  } else {
+    // If manual active but expired, clear it
+    const nowMk = minuteKeyForDate(new Date());
+    if(state.manual && state.manual.active && state.manual.expiresMinuteKey && state.manual.expiresMinuteKey < nowMk){
+      state.manual = { active:false, value:null, expiresMinuteKey:null };
+      saveState(state);
+    }
+    // ensure UI shows correct (if manual active, it will remain)
+    render();
+  }
+  scheduleAlignment();
+  // also poll every 2 seconds to catch external tab changes
+  setInterval(()=> {
+    const loaded = loadState();
+    if(!loaded) return;
+    // simple compare by timestamp
+    if(loaded.timestamp !== state.timestamp || JSON.stringify(loaded.manual) !== JSON.stringify(state.manual)){
+      state = loaded;
+      render();
+    }
+  }, 2000);
+})();
+
+showApiBtn.addEventListener('click', ()=> {
+  alert('Console API:\nWingo.get();\nWingo.setManual(value, {oneMinute:true/false});\nWingo.clearManual();\nWingo.history(20);\n\nOpen browser devtools to use console.');
+});
+
+// initial render
+render();
+</script>
+</body>
+</html>
